@@ -1,4 +1,3 @@
-from torch import threshold
 import cv2
 import numpy as np
 from scipy.optimize import least_squares
@@ -8,25 +7,6 @@ def computeRootSIFTDescriptors(descriptor):
     descriptor = np.sqrt(descriptor)
     return descriptor
 
-def match2d(kp1, des1, kp2, des2):
-    # BFMatcher with default params
-    bf = cv2.BFMatcher(crossCheck=False)
-    matches = bf.knnMatch(des1,des2,k=2)
-    # matches = bf.match(des1, des2)
-    # Apply ratio test
-    matchLocations = []
-    descriptors = []
-    good = []
-    mask = np.zeros(len(kp1),dtype=bool)
-    for m, n in matches:
-        if m.distance < 0.75*n.distance:
-            mask[m.queryIdx] = True
-            good.append([m])
-            img1Pt = kp1[m.queryIdx].pt
-            img2Pt = kp2[m.trainIdx].pt
-            descriptors.append(des1[m.queryIdx])
-            matchLocations.append([img1Pt[0],img1Pt[1], img2Pt[0], img2Pt[1]])
-    return np.array(matchLocations), np.array(descriptors),  good, mask
 
 def flannMatcher(kp1, des1, kp2, des2):
     FLANN_INDEX_KDTREE = 1
@@ -71,8 +51,8 @@ def estimateHomography(keyPoints):
 
     num_inliers = 0
     true_inliers = None
-    threshold = 0.8
-    for _ in range(100):
+    threshold = 5
+    for _ in range(1000):
         sample = np.random.choice(kp1.shape[0], size=4,replace=False)
     
         result = least_squares(lambda x:
@@ -99,7 +79,7 @@ def estimateHomography(keyPoints):
 
 if __name__ == "__main__":
     images = []
-    for i in range(1,7):
+    for i in range(1,6):
         images.append(cv2.imread(f"img{i}.jpg"))
     sift = cv2.SIFT_create()
     key_points = []
@@ -119,27 +99,27 @@ if __name__ == "__main__":
     width = 3*sum([image.shape[1] for image in images])//2
     height= images[0].shape[0]*3
     H = np.eye(3)
-    H[1,2] = height/3
+    # H[1,2] = height/3
     H_list = [H]
     for i in range(1,len(images)):
         rhs_kp = key_points[i]
         rhs_descriptors = descriptors[i]
         matchLocations, _, _, mask = flannMatcher(lhs_kp, lhs_descriptors, rhs_kp, rhs_descriptors)
-        H = H@estimateHomography(matchLocations)
-        H_list.append(H)
+        H = estimateHomography(matchLocations)
+        H_list.append(H_list[-1]@H)
         non_duplicate_lhs = tuple((lhs_kp[i] for i in range(len(lhs_kp)) if not mask[i]))
-        lhs_kp =  cv2.KeyPoint.convert(reproject(np.linalg.inv(H),cv2.KeyPoint.convert(non_duplicate_lhs)))+ rhs_kp
-        lhs_descriptors = np.vstack([lhs_descriptors[~mask],rhs_descriptors])
+        lhs_kp = rhs_kp
+        lhs_descriptors = rhs_descriptors
+        # lhs_kp =  cv2.KeyPoint.convert(reproject(np.linalg.inv(H),cv2.KeyPoint.convert(non_duplicate_lhs)))+ rhs_kp
+        # lhs_descriptors = np.vstack([lhs_descriptors[~mask],rhs_descriptors])
     H = np.eye(3)
     H[1,2] = height/3
-    H[0,2] = width/2-images[0].shape[0]/2
-    H_mid_inv = np.linalg.inv(H_list[len(H_list)//2])
-    H_mid_inv /= H_mid_inv[2,2]
-    H_list = [H_mid_inv@H_ for H_ in H_list]
+    H[0,2] = width/2-images[0].shape[1]/2
+    H_mid = H_list[len(H_list)//2-1]
+    H_list = [np.linalg.solve(H_mid,H_) for H_ in H_list]
     H_list = [H@H_ for H_ in H_list]
     image = np.zeros((height,width,3), dtype=images[0].dtype)
     for H, img in zip(H_list, images):
-        print(H)
         converted = cv2.warpPerspective(img, H, (width, height))
         image[~np.any(image,2)] = converted[~np.any(image,2)]
         showImage(image)
